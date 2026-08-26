@@ -4,6 +4,7 @@ LICENSE file in the root directory of this source tree.
 *******************************************************************************/
 
 #include "astra-sim/common/Logging.hh"
+#include "astra-sim/common/WorkloadPayload.hh"
 #include "common/CmdLineParser.hh"
 #include "congestion_unaware/CongestionUnawareNetworkApi.hh"
 #include <astra-network-analytical/common/EventQueue.h>
@@ -249,10 +250,14 @@ int main(int argc, char* argv[]) {
             // This instance is done. Go to sleep until exit
             systems[npu_id]->workload->is_sleep = true;
           }
-          else {  
-            // Add new workload to this system
-            systems[npu_id]->workload
-                ->add_workload(new_filename, {});
+          else {
+            std::shared_ptr<const RankEtPayloads> payloads;
+            if (try_parse_rank_et_payloads(new_filename, &payloads)) {
+              systems[npu_id]->workload->add_payloads(payloads, {});
+            } else {
+              // Add new file-backed workload to this system.
+              systems[npu_id]->workload->add_workload(new_filename, {});
+            }
           }
         }
       }
@@ -285,10 +290,16 @@ int main(int argc, char* argv[]) {
             // This instance is done. Go to sleep until exit
             systems[npu_id]->workload->is_sleep = true;
           }
-          else {  
-            // Add new workload to the systems handled by this npu
-            systems[npu_id]->workload
-                ->add_workload(new_filename, managed_systems[idx]);
+          else {
+            std::shared_ptr<const RankEtPayloads> payloads;
+            if (try_parse_rank_et_payloads(new_filename, &payloads)) {
+              systems[npu_id]->workload->add_payloads(
+                  payloads, managed_systems[idx]);
+            } else {
+              // Add new file-backed workload to the managed systems.
+              systems[npu_id]->workload
+                  ->add_workload(new_filename, managed_systems[idx]);
+            }
           }
         }
       }
