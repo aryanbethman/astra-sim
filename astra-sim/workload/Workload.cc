@@ -457,7 +457,14 @@ void Workload::call(EventType event, CallData* data) {
         (hw_resource->num_in_flight_gpu_comp_ops == 0) &&
         (hw_resource->num_in_flight_gpu_comm_ops == 0) ) {
         // report();
-        if (!pending_workloads.empty()) {
+        if (!pending_payloads.empty()) {
+            auto next_payloads = pending_payloads.front();
+            pending_payloads.pop();
+            replace_et_feeder(next_payloads->at(sys->id));
+            iteration++;
+            is_finished = false;
+            fire();
+        } else if (!pending_workloads.empty()) {
             string next_workload = pending_workloads.front();
             pending_workloads.pop();
             // there exists new workload, change the ETFeeder
@@ -475,6 +482,43 @@ void Workload::call(EventType event, CallData* data) {
             is_finished = true;
         }
     }
+}
+
+void Workload::replace_et_feeder(shared_ptr<const string> payload) {
+    if (this->et_feeder != nullptr) {
+        delete this->et_feeder;
+    }
+    this->et_feeder = new ETFeeder(std::move(payload));
+}
+
+void Workload::add_payloads(shared_ptr<const RankEtPayloads> payloads,
+                            const std::vector<Sys*>& systems) {
+    if (payloads == nullptr || payloads->count(sys->id) == 0) {
+        throw invalid_argument("Missing ET payload for workload rank");
+    }
+
+    for (auto* managed_sys : systems) {
+        if (managed_sys == nullptr || managed_sys->workload == nullptr ||
+            payloads->count(managed_sys->id) == 0) {
+            throw invalid_argument("Missing managed-system ET payload");
+        }
+        auto* managed_workload = managed_sys->workload;
+        if (managed_workload->is_finished &&
+            managed_workload->pending_workloads.empty() &&
+            managed_workload->pending_payloads.empty()) {
+            managed_workload->replace_et_feeder(payloads->at(managed_sys->id));
+            managed_workload->iteration++;
+            managed_workload->is_finished = false;
+            managed_workload->fire();
+        } else {
+            managed_workload->pending_payloads.push(payloads);
+        }
+    }
+
+    replace_et_feeder(payloads->at(sys->id));
+    iteration++;
+    is_finished = false;
+    fire();
 }
 
 void Workload::add_workload(const std::string& new_filename,
