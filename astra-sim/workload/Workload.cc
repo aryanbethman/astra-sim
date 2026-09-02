@@ -457,10 +457,14 @@ void Workload::call(EventType event, CallData* data) {
         (hw_resource->num_in_flight_gpu_comp_ops == 0) &&
         (hw_resource->num_in_flight_gpu_comm_ops == 0) ) {
         // report();
-        if (!pending_payloads.empty()) {
-            auto next_payloads = pending_payloads.front();
-            pending_payloads.pop();
-            replace_et_feeder(next_payloads->at(sys->id));
+        if (!pending_execution_templates.empty()) {
+            auto next_template = pending_execution_templates.front();
+            pending_execution_templates.pop();
+            if (next_template.payload != nullptr) {
+                replace_et_feeder(next_template.payload);
+            } else {
+                replace_et_feeder(next_template.rank_template);
+            }
             iteration++;
             is_finished = false;
             fire();
@@ -491,6 +495,14 @@ void Workload::replace_et_feeder(shared_ptr<const string> payload) {
     this->et_feeder = new ETFeeder(std::move(payload));
 }
 
+void Workload::replace_et_feeder(
+    shared_ptr<const RankEtTemplate> rank_template) {
+    if (this->et_feeder != nullptr) {
+        delete this->et_feeder;
+    }
+    this->et_feeder = new ETFeeder(std::move(rank_template));
+}
+
 void Workload::add_payloads(shared_ptr<const RankEtPayloads> payloads,
                             const std::vector<Sys*>& systems) {
     if (payloads == nullptr || payloads->count(sys->id) == 0) {
@@ -505,17 +517,49 @@ void Workload::add_payloads(shared_ptr<const RankEtPayloads> payloads,
         auto* managed_workload = managed_sys->workload;
         if (managed_workload->is_finished &&
             managed_workload->pending_workloads.empty() &&
-            managed_workload->pending_payloads.empty()) {
+            managed_workload->pending_execution_templates.empty()) {
             managed_workload->replace_et_feeder(payloads->at(managed_sys->id));
             managed_workload->iteration++;
             managed_workload->is_finished = false;
             managed_workload->fire();
         } else {
-            managed_workload->pending_payloads.push(payloads);
+            managed_workload->pending_execution_templates.push(
+                {payloads->at(managed_sys->id), nullptr});
         }
     }
 
     replace_et_feeder(payloads->at(sys->id));
+    iteration++;
+    is_finished = false;
+    fire();
+}
+
+void Workload::add_templates(shared_ptr<const RankEtTemplates> templates,
+                             const std::vector<Sys*>& systems) {
+    if (templates == nullptr || templates->count(sys->id) == 0) {
+        throw invalid_argument("Missing ET template for workload rank");
+    }
+
+    for (auto* managed_sys : systems) {
+        if (managed_sys == nullptr || managed_sys->workload == nullptr ||
+            templates->count(managed_sys->id) == 0) {
+            throw invalid_argument("Missing managed-system ET template");
+        }
+        auto* managed_workload = managed_sys->workload;
+        if (managed_workload->is_finished &&
+            managed_workload->pending_workloads.empty() &&
+            managed_workload->pending_execution_templates.empty()) {
+            managed_workload->replace_et_feeder(templates->at(managed_sys->id));
+            managed_workload->iteration++;
+            managed_workload->is_finished = false;
+            managed_workload->fire();
+        } else {
+            managed_workload->pending_execution_templates.push(
+                {nullptr, templates->at(managed_sys->id)});
+        }
+    }
+
+    replace_et_feeder(templates->at(sys->id));
     iteration++;
     is_finished = false;
     fire();
