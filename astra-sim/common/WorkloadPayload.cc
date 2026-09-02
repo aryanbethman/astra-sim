@@ -1,6 +1,7 @@
 #include "astra-sim/common/WorkloadPayload.hh"
 
 #include <cctype>
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -46,26 +47,90 @@ std::string decode_base64(const std::string& encoded) {
   return decoded;
 }
 
-void append_varint(std::string* output, size_t value) {
-  while (value > 0x7f) {
-    output->push_back(static_cast<char>((value & 0x7f) | 0x80));
-    value >>= 7;
-  }
-  output->push_back(static_cast<char>(value));
-}
+using TemplateNodes =
+    std::vector<std::shared_ptr<const ChakraProtoMsg::Node>>;
 
-void append_frame(std::string* output, const std::string& payload) {
-  append_varint(output, payload.size());
-  output->append(payload);
-}
+struct TemplateCacheEntry {
+  std::shared_ptr<const TemplateNodes> nodes;
+  uint64_t last_use = 0;
+};
 
-using TemplateNodes = std::vector<std::string>;
-using TemplateCache = std::unordered_map<std::string,
-                                        std::shared_ptr<const TemplateNodes>>;
+using TemplateCache = std::unordered_map<std::string, TemplateCacheEntry>;
 
 TemplateCache& template_cache() {
   static TemplateCache cache;
   return cache;
+}
+
+size_t& template_cache_max_entries() {
+  static size_t max_entries = 0;
+  return max_entries;
+}
+
+uint64_t& template_cache_clock() {
+  static uint64_t clock = 0;
+  return clock;
+}
+
+TemplateCacheStats& template_cache_stats() {
+  static TemplateCacheStats stats;
+  return stats;
+}
+
+std::vector<std::string>& released_template_ids() {
+  static std::vector<std::string> released;
+  return released;
+}
+
+size_t cached_node_count() {
+  size_t nodes = 0;
+  for (const auto& entry : template_cache()) {
+    nodes += entry.second.nodes->size();
+  }
+  return nodes;
+}
+
+void update_template_cache_high_water() {
+  auto& stats = template_cache_stats();
+  stats.entries = template_cache().size();
+  stats.nodes = cached_node_count();
+  stats.high_water_entries = std::max(stats.high_water_entries, stats.entries);
+  stats.high_water_nodes = std::max(stats.high_water_nodes, stats.nodes);
+}
+
+void touch_template(TemplateCache::iterator entry) {
+  entry->second.last_use = ++template_cache_clock();
+}
+
+void reclaim_inactive_templates() {
+  const size_t max_entries = template_cache_max_entries();
+  if (max_entries == 0) {
+    update_template_cache_high_water();
+    return;
+  }
+
+  auto& cache = template_cache();
+  auto& stats = template_cache_stats();
+  while (cache.size() > max_entries) {
+    auto victim = cache.end();
+    for (auto entry = cache.begin(); entry != cache.end(); ++entry) {
+      // The cache itself is the sole owner only after every active/pending
+      // rank feeder released this immutable structure.
+      if (entry->second.nodes.use_count() == 1 &&
+          (victim == cache.end() ||
+           entry->second.last_use < victim->second.last_use)) {
+        victim = entry;
+      }
+    }
+    if (victim == cache.end()) {
+      ++stats.blocked_evictions;
+      break;
+    }
+    released_template_ids().push_back(victim->first);
+    cache.erase(victim);
+    ++stats.evictions;
+  }
+  update_template_cache_high_water();
 }
 
 void cache_templates(const nlohmann::json& templates) {
@@ -83,18 +148,34 @@ void cache_templates(const nlohmann::json& templates) {
       if (!encoded_node.is_string()) {
         throw std::invalid_argument("template node must be base64 text");
       }
-      nodes->push_back(decode_base64(encoded_node.get<std::string>()));
+      auto node = std::make_shared<ChakraProtoMsg::Node>();
+      if (!node->ParseFromString(decode_base64(encoded_node.get<std::string>()))) {
+        throw std::invalid_argument("invalid serialized template node");
+      }
+      nodes->push_back(std::move(node));
     }
     const auto cached = cache.find(it.key());
     if (cached == cache.end()) {
-      cache.emplace(it.key(), std::move(nodes));
-    } else if (*cached->second != *nodes) {
+      auto inserted = cache.emplace(
+          it.key(), TemplateCacheEntry{std::move(nodes), 0});
+      touch_template(inserted.first);
+    } else if (cached->second.nodes->size() != nodes->size()) {
       throw std::invalid_argument("template ID collision");
+    } else {
+      for (size_t index = 0; index < nodes->size(); ++index) {
+        if (cached->second.nodes->at(index)->SerializeAsString() !=
+            nodes->at(index)->SerializeAsString()) {
+          throw std::invalid_argument("template ID collision");
+        }
+      }
+      touch_template(cached);
     }
   }
+  update_template_cache_high_water();
 }
 
-std::string materialise_binding(const nlohmann::json& binding) {
+std::shared_ptr<const RankEtTemplate> parse_template_binding(
+    const nlohmann::json& binding) {
   if (!binding.is_object() || !binding.contains("template_id") ||
       !binding.contains("metadata") || !binding.contains("nodes")) {
     throw std::invalid_argument("invalid template binding");
@@ -108,83 +189,74 @@ std::string materialise_binding(const nlohmann::json& binding) {
     throw std::invalid_argument("template binding nodes must be an object");
   }
 
-  std::string output;
-  append_frame(&output, decode_base64(binding.at("metadata").get<std::string>()));
-  for (size_t node_index = 0; node_index < cached->second->size(); ++node_index) {
-    ChakraProtoMsg::Node node;
-    if (!node.ParseFromString(cached->second->at(node_index))) {
-      throw std::invalid_argument("invalid serialized template node");
+  // Metadata is intentionally decoded for wire-format validation.  ETFeeder
+  // does not consume it after trace initialization, so a direct template does
+  // not retain or serialize it for every rank.
+  (void)decode_base64(binding.at("metadata").get<std::string>());
+  auto rank_template = std::make_shared<RankEtTemplate>();
+  rank_template->nodes = cached->second.nodes;
+  touch_template(cached);
+  for (auto it = binding.at("nodes").begin(); it != binding.at("nodes").end(); ++it) {
+    const size_t node_index = std::stoull(it.key());
+    if (node_index >= rank_template->nodes->size() || !it.value().is_object()) {
+      throw std::invalid_argument("invalid template node overlay");
     }
-    const auto node_key = std::to_string(node_index);
-    const auto overlay_it = binding.at("nodes").find(node_key);
-    if (overlay_it != binding.at("nodes").end()) {
-      const auto& overlay = *overlay_it;
-      if (overlay.contains("name") && !overlay.at("name").is_null()) {
-        node.set_name(overlay.at("name").get<std::string>());
+    const auto& encoded_overlay = it.value();
+    TemplateNodeOverlay overlay;
+    if (encoded_overlay.contains("name") && !encoded_overlay.at("name").is_null()) {
+      if (!encoded_overlay.at("name").is_string()) {
+        throw std::invalid_argument("template node name must be text");
       }
-      if (!overlay.contains("attrs") || !overlay.at("attrs").is_array()) {
-        throw std::invalid_argument("template node overlay attrs must be an array");
-      }
-      std::unordered_map<int, ChakraProtoMsg::AttributeProto> replacements;
-      for (const auto& entry : overlay.at("attrs")) {
-        if (!entry.is_array() || entry.size() != 2 || !entry.at(0).is_number_integer() ||
-            !entry.at(1).is_string()) {
-          throw std::invalid_argument("invalid template node attribute overlay");
-        }
-        ChakraProtoMsg::AttributeProto attribute;
-        if (!attribute.ParseFromString(decode_base64(entry.at(1).get<std::string>()))) {
-          throw std::invalid_argument("invalid serialized rank attribute");
-        }
-        if (!replacements.emplace(entry.at(0).get<int>(), std::move(attribute)).second) {
-          throw std::invalid_argument("duplicate template node attribute position");
-        }
-      }
-      if (!replacements.empty()) {
-        std::vector<ChakraProtoMsg::AttributeProto> retained;
-        retained.reserve(node.attr_size());
-        for (const auto& attribute : node.attr()) {
-          retained.push_back(attribute);
-        }
-        const int total = static_cast<int>(retained.size() + replacements.size());
-        node.clear_attr();
-        size_t retained_index = 0;
-        for (int position = 0; position < total; ++position) {
-          const auto replacement = replacements.find(position);
-          if (replacement != replacements.end()) {
-            node.add_attr()->CopyFrom(replacement->second);
-          } else if (retained_index < retained.size()) {
-            node.add_attr()->CopyFrom(retained.at(retained_index++));
-          } else {
-            throw std::invalid_argument("invalid template node attribute position");
-          }
-        }
-      }
+      overlay.has_name = true;
+      overlay.name = encoded_overlay.at("name").get<std::string>();
     }
-    append_frame(&output, node.SerializeAsString());
+    if (!encoded_overlay.contains("attrs") || !encoded_overlay.at("attrs").is_array()) {
+      throw std::invalid_argument("template node overlay attrs must be an array");
+    }
+    std::unordered_map<int, bool> positions;
+    for (const auto& entry : encoded_overlay.at("attrs")) {
+      if (!entry.is_array() || entry.size() != 2 || !entry.at(0).is_number_integer() ||
+          !entry.at(1).is_string()) {
+        throw std::invalid_argument("invalid template node attribute overlay");
+      }
+      const int position = entry.at(0).get<int>();
+      if (position < 0 || !positions.emplace(position, true).second) {
+        throw std::invalid_argument("duplicate template node attribute position");
+      }
+      ChakraProtoMsg::AttributeProto attribute;
+      if (!attribute.ParseFromString(decode_base64(entry.at(1).get<std::string>()))) {
+        throw std::invalid_argument("invalid serialized rank attribute");
+      }
+      overlay.attributes.emplace_back(position, std::move(attribute));
+    }
+    rank_template->overlays.emplace(node_index, std::move(overlay));
   }
-  return output;
+  return rank_template;
 }
 
-std::shared_ptr<const RankEtPayloads> parse_template_bundle(
+std::shared_ptr<const RankEtTemplates> parse_template_bundle(
     const nlohmann::json& bundle) {
   if (!bundle.is_object() || !bundle.contains("templates") ||
       !bundle.contains("bindings") || !bundle.at("bindings").is_object()) {
     throw std::invalid_argument("invalid ET template bundle");
   }
   cache_templates(bundle.at("templates"));
-  auto payloads = std::make_shared<RankEtPayloads>();
+  auto templates = std::make_shared<RankEtTemplates>();
   for (auto it = bundle.at("bindings").begin(); it != bundle.at("bindings").end(); ++it) {
     const int rank = std::stoi(it.key());
     if (rank < 0) {
       throw std::invalid_argument("invalid template binding rank");
     }
-    payloads->emplace(rank,
-                      std::make_shared<const std::string>(materialise_binding(it.value())));
+    templates->emplace(rank, parse_template_binding(it.value()));
   }
-  if (payloads->empty()) {
+  if (templates->empty()) {
     throw std::invalid_argument("ET template bundle is empty");
   }
-  return payloads;
+  // Active RankEtTemplate/ETFeeder instances keep shared ownership of nodes.
+  // Only map-only entries can be released, so cache eviction cannot alter an
+  // in-flight simulated graph.
+  reclaim_inactive_templates();
+  return templates;
 }
 
 }  // namespace
@@ -193,13 +265,6 @@ bool try_parse_rank_et_payloads(
     const std::string& command,
     std::shared_ptr<const RankEtPayloads>* payloads) {
   constexpr const char* kPayloadPrefix = "ET_PAYLOADS ";
-  constexpr const char* kTemplatePrefix = "ET_TEMPLATE_BUNDLE ";
-  if (command.compare(0, std::char_traits<char>::length(kTemplatePrefix),
-                      kTemplatePrefix) == 0) {
-    *payloads = parse_template_bundle(nlohmann::json::parse(
-        command.substr(std::char_traits<char>::length(kTemplatePrefix))));
-    return true;
-  }
   if (command.compare(0, std::char_traits<char>::length(kPayloadPrefix),
                       kPayloadPrefix) != 0) {
     return false;
@@ -228,6 +293,36 @@ bool try_parse_rank_et_payloads(
   }
   *payloads = decoded;
   return true;
+}
+
+bool try_parse_rank_et_templates(
+    const std::string& command,
+    std::shared_ptr<const RankEtTemplates>* templates) {
+  constexpr const char* kTemplatePrefix = "ET_TEMPLATE_BUNDLE ";
+  if (command.compare(0, std::char_traits<char>::length(kTemplatePrefix),
+                      kTemplatePrefix) != 0) {
+    return false;
+  }
+  *templates = parse_template_bundle(nlohmann::json::parse(
+      command.substr(std::char_traits<char>::length(kTemplatePrefix))));
+  return true;
+}
+
+void configure_template_cache_max_entries(size_t max_entries) {
+  template_cache_max_entries() = max_entries;
+  reclaim_inactive_templates();
+}
+
+std::vector<std::string> take_released_template_ids() {
+  auto& released = released_template_ids();
+  std::vector<std::string> result;
+  result.swap(released);
+  return result;
+}
+
+TemplateCacheStats get_template_cache_stats() {
+  update_template_cache_high_water();
+  return template_cache_stats();
 }
 
 }  // namespace AstraSim

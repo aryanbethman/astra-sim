@@ -70,6 +70,10 @@ int main(int argc, char* argv[]) {
     const auto injection_scale = cmd_line_parser.get<double>("injection-scale");
     const auto rendezvous_protocol =
         cmd_line_parser.get<bool>("rendezvous-protocol");
+    const auto compact_controller_protocol =
+        cmd_line_parser.get<bool>("compact-controller-protocol");
+    const auto template_cache_max_entries =
+        cmd_line_parser.get<size_t>("template-cache-max-entries");
     auto start_npu_ids =
         cmd_line_parser.get<std::vector<int>>("start-npu-ids");
     auto end_npu_ids =
@@ -84,6 +88,7 @@ int main(int argc, char* argv[]) {
     }
 
     AstraSim::LoggerFactory::init(logging_configuration);
+    configure_template_cache_max_entries(template_cache_max_entries);
 
     // Instantiate event queue
     const auto event_queue = std::make_shared<EventQueue>();
@@ -318,8 +323,18 @@ int main(int argc, char* argv[]) {
             last_reported_iter[npu_id] = systems[npu_id]->workload->iteration;
             ++state_gen;
           }
-          systems[npu_id]->workload->report();
-          AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+          if (compact_controller_protocol) {
+            // Compact form: one READY line the frontend parses directly,
+            // instead of report()'s multi-line human-readable dump.
+            const auto cycle = Sys::boostedTick();
+            cout << "READY " << systems[npu_id]->workload->sys->id << " "
+                 << systems[npu_id]->workload->iteration << " " << cycle << " "
+                 << cycle - systems[npu_id]->workload->hw_resource->tics_gpu_ops
+                 << endl;
+          } else {
+            systems[npu_id]->workload->report();
+            AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+          }
 
           std::string new_filename;
           std::getline(std::cin, new_filename);
@@ -377,8 +392,14 @@ int main(int argc, char* argv[]) {
             systems[npu_id]->workload->is_sleep = true;
           }
           else {
+            std::shared_ptr<const RankEtTemplates> templates;
             std::shared_ptr<const RankEtPayloads> payloads;
-            if (try_parse_rank_et_payloads(new_filename, &payloads)) {
+            if (try_parse_rank_et_templates(new_filename, &templates)) {
+              systems[npu_id]->workload->add_templates(templates, {});
+              for (const auto& template_id : take_released_template_ids()) {
+                cout << "TEMPLATE_RELEASE " << template_id << endl;
+              }
+            } else if (try_parse_rank_et_payloads(new_filename, &payloads)) {
               systems[npu_id]->workload->add_payloads(payloads, {});
             } else {
               // Add new file-backed workload to this system.
@@ -405,8 +426,18 @@ int main(int argc, char* argv[]) {
             last_reported_iter[npu_id] = systems[npu_id]->workload->iteration;
             ++state_gen;
           }
-          systems[npu_id]->workload->report();
-          AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+          if (compact_controller_protocol) {
+            // Compact form: one READY line the frontend parses directly,
+            // instead of report()'s multi-line human-readable dump.
+            const auto cycle = Sys::boostedTick();
+            cout << "READY " << systems[npu_id]->workload->sys->id << " "
+                 << systems[npu_id]->workload->iteration << " " << cycle << " "
+                 << cycle - systems[npu_id]->workload->hw_resource->tics_gpu_ops
+                 << endl;
+          } else {
+            systems[npu_id]->workload->report();
+            AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+          }
 
           std::string new_filename;
           std::getline(std::cin, new_filename);
@@ -464,8 +495,15 @@ int main(int argc, char* argv[]) {
             systems[npu_id]->workload->is_sleep = true;
           }
           else {
+            std::shared_ptr<const RankEtTemplates> templates;
             std::shared_ptr<const RankEtPayloads> payloads;
-            if (try_parse_rank_et_payloads(new_filename, &payloads)) {
+            if (try_parse_rank_et_templates(new_filename, &templates)) {
+              systems[npu_id]->workload->add_templates(
+                  templates, managed_systems[idx]);
+              for (const auto& template_id : take_released_template_ids()) {
+                cout << "TEMPLATE_RELEASE " << template_id << endl;
+              }
+            } else if (try_parse_rank_et_payloads(new_filename, &payloads)) {
               systems[npu_id]->workload->add_payloads(
                   payloads, managed_systems[idx]);
             } else {
@@ -489,17 +527,30 @@ int main(int argc, char* argv[]) {
     }
 
     // check non exited system
-    cout << "Checking Non-Exited Systems ..." << endl;
+    if (!compact_controller_protocol) {
+      cout << "Checking Non-Exited Systems ..." << endl;
+    }
     bool done = true;
     for (int npu_id = 0; npu_id < npus_count; npu_id++) {
 
       if (systems[npu_id]->workload->is_finished == false){
-        cout << "sys[" << npu_id << "] " << endl;
-        systems[npu_id]->workload->et_feeder->printGraph();
+        if (!compact_controller_protocol) {
+          cout << "sys[" << npu_id << "] " << endl;
+          systems[npu_id]->workload->et_feeder->printGraph();
+        }
         done = false;
       }
     }
-    if (done){
+    if (compact_controller_protocol) {
+      const auto template_cache_stats = get_template_cache_stats();
+      cout << "TEMPLATE_CACHE " << template_cache_stats.entries << " "
+           << template_cache_stats.nodes << " "
+           << template_cache_stats.high_water_entries << " "
+           << template_cache_stats.high_water_nodes << " "
+           << template_cache_stats.evictions << " "
+           << template_cache_stats.blocked_evictions << endl;
+      cout << (done ? "COMPLETE" : "INCOMPLETE") << endl;
+    } else if (done){
       cout << "---------------------------" << endl;
       cout << "All Request Has Been Exited" << endl;
       cout << "---------------------------" << endl;

@@ -46,6 +46,8 @@ class Workload : public Callable {
     void add_workload(const std::string& new_filename, const std::vector<Sys*>& systems);
     void add_payloads(std::shared_ptr<const RankEtPayloads> payloads,
                       const std::vector<Sys*>& systems);
+    void add_templates(std::shared_ptr<const RankEtTemplates> templates,
+                       const std::vector<Sys*>& systems);
     void sleep_workload(const std::vector<Sys*>& systems);
 
     // stats
@@ -63,10 +65,15 @@ class Workload : public Callable {
 
     bool is_sleep;
     std::queue<std::string> pending_workloads;
-    std::queue<std::shared_ptr<const RankEtPayloads>> pending_payloads;
+    struct PendingExecutionTemplate {
+        std::shared_ptr<const std::string> payload;
+        std::shared_ptr<const RankEtTemplate> rank_template;
+    };
+    std::queue<PendingExecutionTemplate> pending_execution_templates;
 
   private:
     void replace_et_feeder(std::shared_ptr<const std::string> payload);
+    void replace_et_feeder(std::shared_ptr<const RankEtTemplate> rank_template);
 };
 
 }  // namespace AstraSim
