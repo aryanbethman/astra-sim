@@ -289,11 +289,20 @@ int main(int argc, char* argv[]) {
 
       for (std::size_t idx = 0; idx < start_npu_ids.size(); ++idx) {
         int npu_id = start_npu_ids[idx];
+        const bool managed_systems_finished = std::all_of(
+            managed_systems[idx].begin(), managed_systems[idx].end(),
+            [](const Sys* managed_sys) {
+              return managed_sys != nullptr && managed_sys->workload != nullptr &&
+                     !managed_sys->workload->is_sleep &&
+                     managed_sys->workload->is_finished;
+            });
         // Only proceed if the workload has finished its iteration
         if (!compact_controller_protocol) {
           cout << "Checking Managed Systems for Controller NPU " << npu_id << " ..." << endl;
         }
-        if (!systems[npu_id]->workload->is_sleep && systems[npu_id]->workload->is_finished) {
+        if (!systems[npu_id]->workload->is_sleep &&
+            systems[npu_id]->workload->is_finished &&
+            managed_systems_finished) {
           if (compact_controller_protocol) {
             const auto cycle = Sys::boostedTick();
             cout << "READY " << systems[npu_id]->workload->sys->id << " "
