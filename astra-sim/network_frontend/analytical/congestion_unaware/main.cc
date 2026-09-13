@@ -415,9 +415,21 @@ int main(int argc, char* argv[]) {
 
       for (std::size_t idx = 0; idx < start_npu_ids.size(); ++idx) {
         int npu_id = start_npu_ids[idx];
+        // A controller speaks for the systems it manages, so it is not
+        // ready until they have all finished their iteration too --
+        // reporting on its own state alone lets the frontend advance
+        // while a managed system is still mid-iteration.
+        const bool managed_systems_finished = std::all_of(
+            managed_systems[idx].begin(), managed_systems[idx].end(),
+            [](const Sys* managed_sys) {
+              return managed_sys != nullptr && managed_sys->workload != nullptr &&
+                     !managed_sys->workload->is_sleep &&
+                     managed_sys->workload->is_finished;
+            });
         // Only proceed if the workload has finished its iteration
         if (!systems[npu_id]->workload->is_sleep &&
-            systems[npu_id]->workload->is_finished && askable(npu_id)) {
+            systems[npu_id]->workload->is_finished &&
+            managed_systems_finished && askable(npu_id)) {
           asked_any = true;
           if (static_cast<long long>(systems[npu_id]->workload->iteration) !=
               last_reported_iter[npu_id]) {
