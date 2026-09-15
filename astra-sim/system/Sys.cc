@@ -52,7 +52,6 @@ Sys::SchedulerUnit::SchedulerUnit(Sys* sys,
     this->queue_threshold = queue_threshold;
     this->latency_per_dimension.resize(queues.size(), 0);
     this->total_chunks_per_dimension.resize(queues.size(), 0);
-    this->total_active_chunks_per_dimension.resize(queues.size(), 0);
 
     int base = 0;
     int dimension = 0;
@@ -65,16 +64,10 @@ Sys::SchedulerUnit::SchedulerUnit(Sys* sys,
             base++;
         }
         dimension++;
-        UsageTracker u(2);
-        usage.push_back(u);
     }
 }
 
 void Sys::SchedulerUnit::notify_stream_added(int vnet) {
-    if (sys->id == 0 &&
-        ++total_active_chunks_per_dimension[queue_id_to_dimension[vnet]] == 1) {
-        usage[queue_id_to_dimension[vnet]].increase_usage();
-    }
     stream_pointer[vnet] = sys->active_Streams[vnet].begin();
     advance(stream_pointer[vnet], running_streams[vnet]);
     while (stream_pointer[vnet] != sys->active_Streams[vnet].end() &&
@@ -98,10 +91,6 @@ void Sys::SchedulerUnit::notify_stream_added_into_ready_list() {
 }
 
 void Sys::SchedulerUnit::notify_stream_removed(int vnet, Tick running_time) {
-    if (sys->id == 0 &&
-        --total_active_chunks_per_dimension[queue_id_to_dimension[vnet]] == 0) {
-        usage[queue_id_to_dimension[vnet]].decrease_usage();
-    }
     running_streams[vnet]--;
 
     int dimension = this->queue_id_to_dimension[vnet];
@@ -1423,6 +1412,10 @@ void Sys::proceed_to_next_vnet_baseline(StreamBaseline* stream) {
             scheduler_unit->notify_stream_removed(
                 previous_vnet, Sys::boostedTick() - stream->last_init);
         }
+        // Only the never-called ask_for_schedule() and a panic message read
+        // these; left in place they keep an entry per stream id for the run.
+        BaseStream::synchronizer.erase(stream->stream_id);
+        BaseStream::ready_counter.erase(stream->stream_id);
         delete stream;
         return;
     }

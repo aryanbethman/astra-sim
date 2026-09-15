@@ -63,3 +63,17 @@ int ChunkIdGenerator::create_recv_chunk_id(
     entry->second.increment_recv_id();
     return entry->second.get_recv_id();
 }
+
+void ChunkIdGenerator::release_ids(const int tag,
+                                   const int src,
+                                   const int dest,
+                                   const ChunkSize chunk_size) noexcept {
+    const auto entry =
+        chunk_id_map.find(std::make_tuple(tag, src, dest, chunk_size));
+    assert(entry != chunk_id_map.end());
+
+    // an unmatched send or recv still needs the next id on the other side
+    if (entry->second.get_send_id() == entry->second.get_recv_id()) {
+        chunk_id_map.erase(entry);
+    }
+}

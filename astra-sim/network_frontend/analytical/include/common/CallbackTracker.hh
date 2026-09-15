@@ -71,6 +71,20 @@ class CallbackTracker {
                    ChunkSize chunk_size,
                    int chunk_id) noexcept;
 
+    /**
+     * Check whether any chunk of (tag, src, dest, chunk_size) is tracked.
+     *
+     * @param tag tag of the sim_send() or sim_recv() call
+     * @param src src NPU ID of the sim_send() or sim_recv() call
+     * @param dest dest NPU ID of the sim_send() or sim_recv() call
+     * @param chunk_size chunk size of the sim_send() or sim_recv() call
+     * @return true if at least one chunk of the key is tracked
+     */
+    [[nodiscard]] bool has_entries(int tag,
+                                   int src,
+                                   int dest,
+                                   ChunkSize chunk_size) const noexcept;
+
   private:
     /// map from (tag, src, dest, chunk_size, chunk_id) tuple to
     /// CallbackTrackerEntry

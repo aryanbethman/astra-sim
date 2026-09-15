@@ -423,7 +423,10 @@ void Workload::call(EventType event, CallData* data) {
         // more statistics in the workload layer
         delete collective_comm_wrapper_map[int_data->data];
         collective_comm_wrapper_map.erase(int_data->data);
+        collective_comm_node_id_map.erase(int_data->data);
         et_feeder->removeNode(node_id);
+        // DataSet::notify_stream_finished allocates this and hands it over
+        delete int_data;
 
     } else {
         if (data == nullptr) {

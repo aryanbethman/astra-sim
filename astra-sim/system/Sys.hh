@@ -54,9 +54,7 @@ class Sys : public Callable {
         std::map<int, std::list<BaseStream*>::iterator> stream_pointer;
         std::vector<Tick> latency_per_dimension;
         std::vector<double> total_chunks_per_dimension;
-        std::vector<uint64_t> total_active_chunks_per_dimension;
         std::map<int, int> queue_id_to_dimension;
-        std::vector<UsageTracker> usage;
     };
     //---------------------------------------------------------------------------
 

@@ -81,3 +81,17 @@ void CallbackTracker::pop_entry(const int tag,
     // erase entry from the tracker
     tracker.erase(entry);
 }
+
+bool CallbackTracker::has_entries(const int tag,
+                                  const int src,
+                                  const int dest,
+                                  const ChunkSize chunk_size) const noexcept {
+    // entries of one key are adjacent and ordered by chunk_id, which starts
+    // at 0
+    const auto entry =
+        tracker.lower_bound(std::make_tuple(tag, src, dest, chunk_size, 0));
+    return entry != tracker.end() && std::get<0>(entry->first) == tag &&
+           std::get<1>(entry->first) == src &&
+           std::get<2>(entry->first) == dest &&
+           std::get<3>(entry->first) == chunk_size;
+}

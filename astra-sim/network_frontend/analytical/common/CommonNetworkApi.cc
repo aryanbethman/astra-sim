@@ -34,9 +34,9 @@ CallbackTracker& CommonNetworkApi::get_callback_tracker() noexcept {
 void CommonNetworkApi::process_chunk_arrival(void* args) noexcept {
     assert(args != nullptr);
 
-    // parse chunk data
-    auto* const data =
-        static_cast<std::tuple<int, int, int, uint64_t, int>*>(args);
+    // parse chunk data; sim_send() handed over ownership of it
+    const auto data = std::unique_ptr<std::tuple<int, int, int, uint64_t, int>>(
+        static_cast<std::tuple<int, int, int, uint64_t, int>*>(args));
     const auto [tag, src, dest, count, chunk_id] = *data;
 
     // search tracker
@@ -50,7 +50,7 @@ void CommonNetworkApi::process_chunk_arrival(void* args) noexcept {
         entry.value()->invoke_recv_handler();
 
         // remove entry
-        tracker.pop_entry(tag, src, dest, count, chunk_id);
+        pop_chunk(tag, src, dest, count, chunk_id);
     } else {
         // run only send callback, as recv is not ready yet.
         entry.value()->invoke_send_handler();
@@ -59,6 +59,22 @@ void CommonNetworkApi::process_chunk_arrival(void* args) noexcept {
         // so that recv callback will be invoked immediately
         // when sim_recv() is called
         entry.value()->set_transmission_finished();
+    }
+}
+
+void CommonNetworkApi::pop_chunk(const int tag,
+                                 const int src,
+                                 const int dest,
+                                 const ChunkSize chunk_size,
+                                 const int chunk_id) noexcept {
+    callback_tracker.pop_entry(tag, src, dest, chunk_size, chunk_id);
+
+    // Tags are stream ids, so a key is rarely seen again once its collective
+    // ends, and its id counters would otherwise stay for the whole run: one
+    // entry per collective per rank. Once no chunk under the key is
+    // outstanding, both ids can restart at 0 without colliding.
+    if (!callback_tracker.has_entries(tag, src, dest, chunk_size)) {
+        chunk_id_generator.release_ids(tag, src, dest, chunk_size);
     }
 }
 
@@ -116,7 +132,7 @@ int CommonNetworkApi::sim_recv(void* const buffer,
             // transmission already finished, run callback immediately
 
             // pop entry
-            callback_tracker.pop_entry(tag, src, dst, count, chunk_id);
+            pop_chunk(tag, src, dst, count, chunk_id);
 
             // run recv callback immediately
             const auto delta = timespec_t{NS, 0};

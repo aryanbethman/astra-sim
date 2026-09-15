@@ -56,6 +56,22 @@ class ChunkIdGenerator {
                                            int dest,
                                            ChunkSize chunk_size) noexcept;
 
+    /**
+     * Release the id counters of (tag, src, dest, chunk_size) if every send id
+     * issued under it has been matched by a recv id. Call only once no chunk
+     * of the key is tracked, so ids restarting at 0 cannot collide with a
+     * chunk still in flight.
+     *
+     * @param tag tag of the sim_send() or sim_recv() call
+     * @param src src NPU ID of the sim_send() or sim_recv() call
+     * @param dest dest NPU ID of the sim_send() or sim_recv() call
+     * @param chunk_size chunk size of the sim_send() or sim_recv() call
+     */
+    void release_ids(int tag,
+                     int src,
+                     int dest,
+                     ChunkSize chunk_size) noexcept;
+
   private:
     /// map from (tag, src, dest, chunk_size) tuple to ChunkIdGeneratorEntry
     std::map<Key, ChunkIdGeneratorEntry> chunk_id_map;

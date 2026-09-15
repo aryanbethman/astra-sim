@@ -84,6 +84,16 @@ class CommonNetworkApi : public AstraNetworkAPI {
     double get_BW_at_dimension(int dim) override;
 
   protected:
+    /**
+     * Remove a delivered chunk from the callback tracker, and release the
+     * chunk id counters of its key once no chunk under that key is tracked.
+     */
+    static void pop_chunk(int tag,
+                          int src,
+                          int dest,
+                          ChunkSize chunk_size,
+                          int chunk_id) noexcept;
+
     /// event queue
     static std::shared_ptr<EventQueue> event_queue;
 
