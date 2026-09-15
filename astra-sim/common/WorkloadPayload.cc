@@ -19,7 +19,9 @@ std::string decode_base64(const std::string& encoded) {
   std::string decoded;
   decoded.reserve((encoded.size() * 3) / 4);
 
-  int value = 0;
+  // Unsigned: the accumulator keeps shifting old sextets out of the top, and
+  // a signed left shift into the sign bit is undefined (UBSan flags it).
+  unsigned int value = 0;
   int bits = -8;
   bool padding_seen = false;
   for (unsigned char character : encoded) {
