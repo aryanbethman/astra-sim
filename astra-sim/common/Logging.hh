@@ -2,6 +2,7 @@
 #define __COMMON_LOGGING_HH__
 
 #include "spdlog/sinks/stdout_color_sinks.h"
+#include "spdlog/sinks/stdout_sinks.h"
 #include "spdlog/spdlog.h"
 #include "spdlog_setup/conf.h"
 #include <memory>
@@ -16,11 +17,12 @@ class LoggerFactory {
     LoggerFactory() = delete;
     static std::shared_ptr<spdlog::logger> get_logger(
         const std::string& logger_name);
-    static void init(const std::string& log_conf_path = "empty");
+    static void init(const std::string& log_conf_path = "empty",
+                     bool console_to_stderr = false);
     static void shutdown(void);
 
   private:
-    static void init_default_components();
+    static void init_default_components(bool console_to_stderr);
     static std::unordered_set<spdlog::sink_ptr> default_sinks;
 };
 

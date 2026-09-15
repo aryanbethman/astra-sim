@@ -87,7 +87,7 @@ int main(int argc, char* argv[]) {
       end_npu_ids.clear();
     }
 
-    AstraSim::LoggerFactory::init(logging_configuration);
+    AstraSim::LoggerFactory::init(logging_configuration, compact_controller_protocol);
     configure_template_cache_max_entries(template_cache_max_entries);
 
     // Instantiate event queue
