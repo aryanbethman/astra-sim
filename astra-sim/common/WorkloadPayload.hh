@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -35,6 +36,10 @@ struct TemplateCacheStats {
   size_t high_water_nodes = 0;
   size_t evictions = 0;
   size_t blocked_evictions = 0;
+  uint64_t template_decode_ns = 0;
+  uint64_t binding_parse_ns = 0;
+  uint64_t direct_feeder_init_ns = 0;
+  uint64_t direct_feeder_inits = 0;
 };
 
 using RankEtTemplates =
@@ -58,5 +63,7 @@ std::vector<std::string> take_released_template_ids();
 
 /** Current and high-water template-cache statistics for streamed metrics. */
 TemplateCacheStats get_template_cache_stats();
+
+void record_direct_template_feeder_init(uint64_t duration_ns);
 
 }  // namespace AstraSim

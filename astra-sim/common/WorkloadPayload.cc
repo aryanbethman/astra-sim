@@ -1,5 +1,6 @@
 #include "astra-sim/common/WorkloadPayload.hh"
 
+#include <chrono>
 #include <cctype>
 #include <algorithm>
 #include <cstdint>
@@ -136,6 +137,7 @@ void reclaim_inactive_templates() {
 }
 
 void cache_templates(const nlohmann::json& templates) {
+  const auto started = std::chrono::steady_clock::now();
   if (!templates.is_object()) {
     throw std::invalid_argument("template bundle templates must be an object");
   }
@@ -174,6 +176,9 @@ void cache_templates(const nlohmann::json& templates) {
     }
   }
   update_template_cache_high_water();
+  template_cache_stats().template_decode_ns +=
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - started).count();
 }
 
 std::shared_ptr<const RankEtTemplate> parse_template_binding(
@@ -238,6 +243,7 @@ std::shared_ptr<const RankEtTemplate> parse_template_binding(
 
 std::shared_ptr<const RankEtTemplates> parse_template_bundle(
     const nlohmann::json& bundle) {
+  const auto started = std::chrono::steady_clock::now();
   if (!bundle.is_object() || !bundle.contains("templates") ||
       !bundle.contains("bindings") || !bundle.at("bindings").is_object()) {
     throw std::invalid_argument("invalid ET template bundle");
@@ -258,6 +264,9 @@ std::shared_ptr<const RankEtTemplates> parse_template_bundle(
   // Only map-only entries can be released, so cache eviction cannot alter an
   // in-flight simulated graph.
   reclaim_inactive_templates();
+  template_cache_stats().binding_parse_ns +=
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - started).count();
   return templates;
 }
 
@@ -325,6 +334,12 @@ std::vector<std::string> take_released_template_ids() {
 TemplateCacheStats get_template_cache_stats() {
   update_template_cache_high_water();
   return template_cache_stats();
+}
+
+void record_direct_template_feeder_init(uint64_t duration_ns) {
+  auto& stats = template_cache_stats();
+  stats.direct_feeder_init_ns += duration_ns;
+  ++stats.direct_feeder_inits;
 }
 
 }  // namespace AstraSim

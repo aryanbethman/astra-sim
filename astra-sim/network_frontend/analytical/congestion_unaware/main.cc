@@ -549,6 +549,10 @@ int main(int argc, char* argv[]) {
            << template_cache_stats.high_water_nodes << " "
            << template_cache_stats.evictions << " "
            << template_cache_stats.blocked_evictions << endl;
+      cout << "TEMPLATE_PROFILE " << template_cache_stats.template_decode_ns << " "
+           << template_cache_stats.binding_parse_ns << " "
+           << template_cache_stats.direct_feeder_init_ns << " "
+           << template_cache_stats.direct_feeder_inits << endl;
       cout << (done ? "COMPLETE" : "INCOMPLETE") << endl;
     } else if (done){
       cout << "---------------------------" << endl;
