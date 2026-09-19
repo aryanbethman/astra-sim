@@ -421,7 +421,9 @@ int main(int argc, char* argv[]) {
           else {
             std::shared_ptr<const RankEtTemplates> templates;
             std::shared_ptr<const RankEtPayloads> payloads;
-            if (try_parse_rank_et_templates(new_filename, &templates)) {
+            const std::vector<int> wanted_ranks{npu_id};
+            if (try_parse_rank_et_templates(new_filename, &templates,
+                                            &wanted_ranks)) {
               systems[npu_id]->workload->add_templates(templates, {});
               for (const auto& template_id : take_released_template_ids()) {
                 cout << "TEMPLATE_RELEASE " << template_id << endl;
@@ -524,7 +526,12 @@ int main(int argc, char* argv[]) {
           else {
             std::shared_ptr<const RankEtTemplates> templates;
             std::shared_ptr<const RankEtPayloads> payloads;
-            if (try_parse_rank_et_templates(new_filename, &templates)) {
+            std::vector<int> wanted_ranks{npu_id};
+            for (auto* managed_sys : managed_systems[idx]) {
+              wanted_ranks.push_back(managed_sys->id);
+            }
+            if (try_parse_rank_et_templates(new_filename, &templates,
+                                            &wanted_ranks)) {
               systems[npu_id]->workload->add_templates(
                   templates, managed_systems[idx]);
               for (const auto& template_id : take_released_template_ids()) {

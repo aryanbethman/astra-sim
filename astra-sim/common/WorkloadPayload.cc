@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cctype>
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -15,8 +16,18 @@ namespace AstraSim {
 namespace {
 
 std::string decode_base64(const std::string& encoded) {
-  static const std::string alphabet =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  // Sextet value per byte, -1 outside the alphabet. A lookup rather than a
+  // linear search of the alphabet for every character decoded.
+  static const std::array<int8_t, 256> sextet = [] {
+    std::array<int8_t, 256> table{};
+    table.fill(-1);
+    const char* alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (int i = 0; i < 64; ++i) {
+      table[static_cast<unsigned char>(alphabet[i])] = static_cast<int8_t>(i);
+    }
+    return table;
+  }();
   std::string decoded;
   decoded.reserve((encoded.size() * 3) / 4);
 
@@ -36,8 +47,8 @@ std::string decode_base64(const std::string& encoded) {
     if (padding_seen) {
       throw std::invalid_argument("base64 data after padding");
     }
-    const auto index = alphabet.find(character);
-    if (index == std::string::npos) {
+    const int index = sextet[character];
+    if (index < 0) {
       throw std::invalid_argument("invalid base64 character");
     }
     value = (value << 6) + static_cast<int>(index);
@@ -242,7 +253,7 @@ std::shared_ptr<const RankEtTemplate> parse_template_binding(
 }
 
 std::shared_ptr<const RankEtTemplates> parse_template_bundle(
-    const nlohmann::json& bundle) {
+    const nlohmann::json& bundle, const std::vector<int>* wanted_ranks) {
   const auto started = std::chrono::steady_clock::now();
   if (!bundle.is_object() || !bundle.contains("templates") ||
       !bundle.contains("bindings") || !bundle.at("bindings").is_object()) {
@@ -254,6 +265,24 @@ std::shared_ptr<const RankEtTemplates> parse_template_bundle(
     const int rank = std::stoi(it.key());
     if (rank < 0) {
       throw std::invalid_argument("invalid template binding rank");
+    }
+    if (wanted_ranks != nullptr &&
+        std::find(wanted_ranks->begin(), wanted_ranks->end(), rank) ==
+            wanted_ranks->end()) {
+      // Every NPU that asks for a batch receives the whole bundle but builds
+      // only its own ranks, so decoding the rest was wasted. Still touch the
+      // template exactly as a parse would: the LRU order decides which
+      // templates are released, and a release the frontend did not expect
+      // would leave a later binding pointing at a missing template.
+      const auto& binding = it.value();
+      if (binding.is_object() && binding.contains("template_id")) {
+        const auto cached = template_cache().find(
+            binding.at("template_id").get<std::string>());
+        if (cached != template_cache().end()) {
+          touch_template(cached);
+        }
+      }
+      continue;
     }
     templates->emplace(rank, parse_template_binding(it.value()));
   }
@@ -308,14 +337,16 @@ bool try_parse_rank_et_payloads(
 
 bool try_parse_rank_et_templates(
     const std::string& command,
-    std::shared_ptr<const RankEtTemplates>* templates) {
+    std::shared_ptr<const RankEtTemplates>* templates,
+    const std::vector<int>* wanted_ranks) {
   constexpr const char* kTemplatePrefix = "ET_TEMPLATE_BUNDLE ";
   if (command.compare(0, std::char_traits<char>::length(kTemplatePrefix),
                       kTemplatePrefix) != 0) {
     return false;
   }
   *templates = parse_template_bundle(nlohmann::json::parse(
-      command.substr(std::char_traits<char>::length(kTemplatePrefix))));
+      command.substr(std::char_traits<char>::length(kTemplatePrefix))),
+      wanted_ranks);
   return true;
 }
 

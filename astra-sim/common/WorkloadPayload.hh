@@ -51,9 +51,12 @@ bool try_parse_rank_et_payloads(
     std::shared_ptr<const RankEtPayloads>* payloads);
 
 /** Parse an ET_TEMPLATE_BUNDLE into shared structural nodes and rank bindings. */
+/// `wanted_ranks`, when given, limits binding decode to the ranks the caller
+/// will instantiate; the others only refresh their template's LRU position.
 bool try_parse_rank_et_templates(
     const std::string& command,
-    std::shared_ptr<const RankEtTemplates>* templates);
+    std::shared_ptr<const RankEtTemplates>* templates,
+    const std::vector<int>* wanted_ranks = nullptr);
 
 /** Bound inactive cached structures; zero preserves the legacy unbounded cache. */
 void configure_template_cache_max_entries(size_t max_entries);
