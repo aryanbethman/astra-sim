@@ -311,7 +311,9 @@ bool try_parse_rank_et_payloads(
   }
 
   const auto encoded =
-      nlohmann::json::parse(command.substr(std::char_traits<char>::length(kPayloadPrefix)));
+      nlohmann::json::parse(
+          command.begin() + std::char_traits<char>::length(kPayloadPrefix),
+          command.end());
   if (!encoded.is_object()) {
     throw std::invalid_argument("ET payload bundle must be a JSON object");
   }
@@ -344,8 +346,12 @@ bool try_parse_rank_et_templates(
                       kTemplatePrefix) != 0) {
     return false;
   }
-  *templates = parse_template_bundle(nlohmann::json::parse(
-      command.substr(std::char_traits<char>::length(kTemplatePrefix))),
+  // Parse in place; a substr copy of the whole bundle was a second large
+  // allocation per command.
+  *templates = parse_template_bundle(
+      nlohmann::json::parse(
+          command.begin() + std::char_traits<char>::length(kTemplatePrefix),
+          command.end()),
       wanted_ranks);
   return true;
 }

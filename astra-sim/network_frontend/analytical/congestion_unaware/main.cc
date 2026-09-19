@@ -18,6 +18,7 @@ LICENSE file in the root directory of this source tree.
 #include <iostream>
 #include <vector>
 #include <cstdio>
+#include <malloc.h>
 #include <string>
 
 namespace {
@@ -73,6 +74,13 @@ static std::string save_json_to_tmp(const json& j, const std::string& name) {
 }
 
 int main(int argc, char* argv[]) {
+  // Disable glibc fastbins. Shared-template runs interleave large
+  // allocations (bundle JSON, decoded templates) with millions of small
+  // node allocations, and every large request with fastbins populated runs
+  // malloc_consolidate over all of them. On 405B TP8xPP2 that was ~50 s of
+  // ASTRA-Sim CPU; small sizes are still served from the per-thread tcache.
+  // An allocator policy only: simulated results are unaffected.
+  mallopt(M_MXFAST, 0);
     // Parse command line arguments
     auto cmd_line_parser = CmdLineParser(argv[0]);
     cmd_line_parser.parse(argc, argv);
@@ -362,7 +370,10 @@ int main(int argc, char* argv[]) {
             AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
           }
 
-          std::string new_filename;
+          // Reused across commands: a template bundle is tens of KB, and a
+          // fresh string per command meant a fresh large allocation (and
+          // its page faults) every time.
+          static std::string new_filename;
           read_command(new_filename);
 
           if (new_filename.rfind("pass", 0) == 0) {
@@ -467,7 +478,10 @@ int main(int argc, char* argv[]) {
             AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
           }
 
-          std::string new_filename;
+          // Reused across commands: a template bundle is tens of KB, and a
+          // fresh string per command meant a fresh large allocation (and
+          // its page faults) every time.
+          static std::string new_filename;
           read_command(new_filename);
 
           if (new_filename.rfind("pass", 0) == 0) {
