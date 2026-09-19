@@ -17,6 +17,32 @@ LICENSE file in the root directory of this source tree.
 #include <cstdlib>
 #include <iostream>
 #include <vector>
+#include <cstdio>
+#include <string>
+
+namespace {
+
+// Read one controller command from stdin, without the trailing newline.
+//
+// std::getline on std::cin -- which is synchronised with C stdio, the
+// default -- pulls the line through stdio_sync_filebuf one character at a
+// time: a getc under the FILE lock, plus an ungetc, per byte, while the
+// string regrows. Commands used to be short paths, but a shared-template
+// bundle is ~11 KB of JSON, and on the 16-NPU ShareGPT-750 run this loop was
+// ~19% of the simulator's CPU. POSIX getline reads the same stdio buffer in
+// bulk, so mixing it with the (unused) synced std::cin cannot lose input.
+void read_command(std::string& command) {
+  static char* buffer = nullptr;
+  static size_t capacity = 0;
+  const ssize_t length = ::getline(&buffer, &capacity, stdin);
+  if (length <= 0) {
+    command.clear();
+    return;
+  }
+  command.assign(buffer, buffer[length - 1] == '\n' ? length - 1 : length);
+}
+
+}  // namespace
 
 using namespace AstraSim;
 using namespace Analytical;
@@ -337,7 +363,7 @@ int main(int argc, char* argv[]) {
           }
 
           std::string new_filename;
-          std::getline(std::cin, new_filename);
+          read_command(new_filename);
 
           if (new_filename.rfind("pass", 0) == 0) {
             // Nothing to run. Do not ask again until the frontend's answer
@@ -440,7 +466,7 @@ int main(int argc, char* argv[]) {
           }
 
           std::string new_filename;
-          std::getline(std::cin, new_filename);
+          read_command(new_filename);
 
           if (new_filename.rfind("pass", 0) == 0) {
             // Nothing to run. Do not ask again until the frontend's answer
