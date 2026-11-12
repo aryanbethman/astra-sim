@@ -39,6 +39,12 @@ void CmdLineParser::define_options() noexcept {
         cxxopts::value<double>()->default_value("1"))(
         "rendezvous-protocol", "Whether to enable rendezvous protocol",
         cxxopts::value<bool>()->default_value("false"))(
+        "compact-controller-protocol",
+        "Emit compact READY/COMPLETE controller records",
+        cxxopts::value<bool>()->default_value("false"))(
+        "template-cache-max-entries",
+        "Maximum inactive structural templates retained in ASTRA (0 is unbounded)",
+        cxxopts::value<size_t>()->default_value("0"))(
         "start-npu-ids",
         "Start NPU id list (comma-separated)",
         cxxopts::value<std::vector<int>>()->default_value("-1"))(

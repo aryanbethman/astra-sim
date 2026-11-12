@@ -4,6 +4,7 @@ LICENSE file in the root directory of this source tree.
 *******************************************************************************/
 
 #include "astra-sim/common/Logging.hh"
+#include "astra-sim/common/WorkloadPayload.hh"
 #include "common/CmdLineParser.hh"
 #include "congestion_unaware/CongestionUnawareNetworkApi.hh"
 #include <astra-network-analytical/common/EventQueue.h>
@@ -19,6 +20,32 @@ LICENSE file in the root directory of this source tree.
 #include <cmath>
 #include <filesystem>
 #include <stdexcept>
+#include <cstdio>
+#include <string>
+
+namespace {
+
+// Read one controller command from stdin, without the trailing newline.
+//
+// std::getline on std::cin -- which is synchronised with C stdio, the
+// default -- pulls the line through stdio_sync_filebuf one character at a
+// time: a getc under the FILE lock, plus an ungetc, per byte, while the
+// string regrows. Commands used to be short paths, but a shared-template
+// bundle is ~11 KB of JSON, and on the 16-NPU ShareGPT-750 run this loop was
+// ~19% of the simulator's CPU. POSIX getline reads the same stdio buffer in
+// bulk, so mixing it with the (unused) synced std::cin cannot lose input.
+void read_command(std::string& command) {
+  static char* buffer = nullptr;
+  static size_t capacity = 0;
+  const ssize_t length = ::getline(&buffer, &capacity, stdin);
+  if (length <= 0) {
+    command.clear();
+    return;
+  }
+  command.assign(buffer, buffer[length - 1] == '\n' ? length - 1 : length);
+}
+
+}  // namespace
 
 using namespace AstraSim;
 using namespace Analytical;
@@ -72,6 +99,10 @@ int main(int argc, char* argv[]) {
     const auto injection_scale = cmd_line_parser.get<double>("injection-scale");
     const auto rendezvous_protocol =
         cmd_line_parser.get<bool>("rendezvous-protocol");
+    const auto compact_controller_protocol =
+        cmd_line_parser.get<bool>("compact-controller-protocol");
+    const auto template_cache_max_entries =
+        cmd_line_parser.get<size_t>("template-cache-max-entries");
     auto start_npu_ids =
         cmd_line_parser.get<std::vector<int>>("start-npu-ids");
     auto end_npu_ids =
@@ -85,7 +116,8 @@ int main(int argc, char* argv[]) {
       end_npu_ids.clear();
     }
 
-    AstraSim::LoggerFactory::init(logging_configuration);
+    AstraSim::LoggerFactory::init(logging_configuration, compact_controller_protocol);
+    configure_template_cache_max_entries(template_cache_max_entries);
 
     // Instantiate event queue
     const auto event_queue = std::make_shared<EventQueue>();
@@ -415,11 +447,24 @@ int main(int argc, char* argv[]) {
             last_reported_iter[npu_id] = systems[npu_id]->workload->iteration;
             ++state_gen;
           }
-          systems[npu_id]->workload->report();
-          AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+          if (compact_controller_protocol) {
+            // Compact form: one READY line the frontend parses directly,
+            // instead of report()'s multi-line human-readable dump.
+            const auto cycle = Sys::boostedTick();
+            cout << "READY " << systems[npu_id]->workload->sys->id << " "
+                 << systems[npu_id]->workload->iteration << " " << cycle << " "
+                 << cycle - systems[npu_id]->workload->hw_resource->tics_gpu_ops
+                 << endl;
+          } else {
+            systems[npu_id]->workload->report();
+            AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+          }
 
-          std::string new_filename;
-          std::getline(std::cin, new_filename);
+          // Reused across commands: a template bundle is tens of KB, and a
+          // fresh string per command meant a fresh large allocation (and
+          // its page faults) every time.
+          static std::string new_filename;
+          read_command(new_filename);
 
           if (new_filename.rfind("pass", 0) == 0) {
             // Nothing to run. Do not ask again until the frontend's answer
@@ -474,9 +519,21 @@ int main(int argc, char* argv[]) {
             systems[npu_id]->workload->is_sleep = true;
           }
           else {
-            // Add new workload to this system
-            systems[npu_id]->workload
-                ->add_workload(new_filename, {});
+            std::shared_ptr<const RankEtTemplates> templates;
+            std::shared_ptr<const RankEtPayloads> payloads;
+            const std::vector<int> wanted_ranks{npu_id};
+            if (try_parse_rank_et_templates(new_filename, &templates,
+                                            &wanted_ranks)) {
+              systems[npu_id]->workload->add_templates(templates, {});
+              for (const auto& template_id : take_released_template_ids()) {
+                cout << "TEMPLATE_RELEASE " << template_id << endl;
+              }
+            } else if (try_parse_rank_et_payloads(new_filename, &payloads)) {
+              systems[npu_id]->workload->add_payloads(payloads, {});
+            } else {
+              // Add new file-backed workload to this system.
+              systems[npu_id]->workload->add_workload(new_filename, {});
+            }
           }
         }
       }
@@ -498,11 +555,24 @@ int main(int argc, char* argv[]) {
             last_reported_iter[npu_id] = systems[npu_id]->workload->iteration;
             ++state_gen;
           }
-          systems[npu_id]->workload->report();
-          AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+          if (compact_controller_protocol) {
+            // Compact form: one READY line the frontend parses directly,
+            // instead of report()'s multi-line human-readable dump.
+            const auto cycle = Sys::boostedTick();
+            cout << "READY " << systems[npu_id]->workload->sys->id << " "
+                 << systems[npu_id]->workload->iteration << " " << cycle << " "
+                 << cycle - systems[npu_id]->workload->hw_resource->tics_gpu_ops
+                 << endl;
+          } else {
+            systems[npu_id]->workload->report();
+            AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+          }
 
-          std::string new_filename;
-          std::getline(std::cin, new_filename);
+          // Reused across commands: a template bundle is tens of KB, and a
+          // fresh string per command meant a fresh large allocation (and
+          // its page faults) every time.
+          static std::string new_filename;
+          read_command(new_filename);
 
           if (new_filename.rfind("pass", 0) == 0) {
             // Nothing to run. Do not ask again until the frontend's answer
@@ -557,9 +627,27 @@ int main(int argc, char* argv[]) {
             systems[npu_id]->workload->is_sleep = true;
           }
           else {
-            // Add new workload to the systems handled by this npu
-            systems[npu_id]->workload
-                ->add_workload(new_filename, managed_systems[idx]);
+            std::shared_ptr<const RankEtTemplates> templates;
+            std::shared_ptr<const RankEtPayloads> payloads;
+            std::vector<int> wanted_ranks{npu_id};
+            for (auto* managed_sys : managed_systems[idx]) {
+              wanted_ranks.push_back(managed_sys->id);
+            }
+            if (try_parse_rank_et_templates(new_filename, &templates,
+                                            &wanted_ranks)) {
+              systems[npu_id]->workload->add_templates(
+                  templates, managed_systems[idx]);
+              for (const auto& template_id : take_released_template_ids()) {
+                cout << "TEMPLATE_RELEASE " << template_id << endl;
+              }
+            } else if (try_parse_rank_et_payloads(new_filename, &payloads)) {
+              systems[npu_id]->workload->add_payloads(
+                  payloads, managed_systems[idx]);
+            } else {
+              // Add new file-backed workload to the managed systems.
+              systems[npu_id]->workload
+                  ->add_workload(new_filename, managed_systems[idx]);
+            }
           }
         }
       }
@@ -576,17 +664,34 @@ int main(int argc, char* argv[]) {
     }
 
     // check non exited system
-    cout << "Checking Non-Exited Systems ..." << endl;
+    if (!compact_controller_protocol) {
+      cout << "Checking Non-Exited Systems ..." << endl;
+    }
     bool done = true;
     for (int npu_id = 0; npu_id < npus_count; npu_id++) {
 
       if (systems[npu_id]->workload->is_finished == false){
-        cout << "sys[" << npu_id << "] " << endl;
-        systems[npu_id]->workload->et_feeder->printGraph();
+        if (!compact_controller_protocol) {
+          cout << "sys[" << npu_id << "] " << endl;
+          systems[npu_id]->workload->et_feeder->printGraph();
+        }
         done = false;
       }
     }
-    if (done){
+    if (compact_controller_protocol) {
+      const auto template_cache_stats = get_template_cache_stats();
+      cout << "TEMPLATE_CACHE " << template_cache_stats.entries << " "
+           << template_cache_stats.nodes << " "
+           << template_cache_stats.high_water_entries << " "
+           << template_cache_stats.high_water_nodes << " "
+           << template_cache_stats.evictions << " "
+           << template_cache_stats.blocked_evictions << endl;
+      cout << "TEMPLATE_PROFILE " << template_cache_stats.template_decode_ns << " "
+           << template_cache_stats.binding_parse_ns << " "
+           << template_cache_stats.direct_feeder_init_ns << " "
+           << template_cache_stats.direct_feeder_inits << endl;
+      cout << (done ? "COMPLETE" : "INCOMPLETE") << endl;
+    } else if (done){
       cout << "---------------------------" << endl;
       cout << "All Request Has Been Exited" << endl;
       cout << "---------------------------" << endl;

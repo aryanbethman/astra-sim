@@ -65,3 +65,5 @@ collectives remain analytical tasks, not a model of NCCL grouped kernel launches
 For any questions about using ASTRA-sim, you can email the ASTRA-sim User Mailing List: astrasim-users@googlegroups.com
 
 To join the mailing list, please fill out the following form: https://forms.gle/18KVS99SG3k9CGXm6
+
+The analytical controller also accepts shared execution-template bundles. Their rank bindings use the same iteration completion check as file-backed workloads.
